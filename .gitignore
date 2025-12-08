@@ -211,3 +211,4 @@ datasets
 env
 ft_out
 *.pth
+.DS_Store
