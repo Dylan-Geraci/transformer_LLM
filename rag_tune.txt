@@ -1,0 +1,625 @@
+================================================================================
+RAG_TUNE.PY - COMPREHENSIVE DOCUMENTATION
+================================================================================
+
+OVERVIEW
+========================================================================
+
+rag_tune.py implements a Retrieval-Augmented Generation (RAG) system for
+answering questions about the CS undergraduate handbook. This is Part 4 of
+the transformer LLM assignment.
+
+KEY CHARACTERISTICS:
+- Uses pretrained TinyLlama (NO fine-tuning)
+- Semantic embeddings for retrieval (NOT TF-IDF)
+- Pure RAG approach - retrieves relevant context, then generates
+- GPU/CPU compatible with automatic detection
+
+
+WHAT DOES IT DO?
+========================================================================
+
+1. Loads the CS handbook PDF (cpsc-handbook-2022.pdf)
+2. Chunks the text into overlapping token windows (1024 tokens, 128 stride)
+3. Generates semantic embeddings for ALL chunks using TinyLlama
+4. For each question:
+   a. Encodes the question into an embedding
+   b. Retrieves top-3 most similar chunks via cosine similarity
+   c. Builds a prompt with retrieved context
+   d. Generates an answer using pretrained TinyLlama
+5. Saves all results to JSON file
+
+
+REQUIREMENTS
+========================================================================
+
+Python Version:
+- Python 3.9+ (tested on 3.11, 3.12)
+
+Required Packages:
+- torch >= 2.0.0 (with CUDA support optional)
+- transformers >= 4.30.0
+- PyPDF2 >= 3.0.0
+- numpy >= 1.24.0, < 2.0.0  (IMPORTANT: NumPy 2.x causes issues!)
+- scikit-learn >= 1.0.0
+
+Hardware:
+- Minimum: 8GB RAM (CPU mode, slow)
+- Recommended: NVIDIA GPU with 8GB+ VRAM (CUDA 11.8 or 12.1)
+- Optimal: NVIDIA GPU with 16GB+ VRAM
+
+Required Files:
+- datasets/cpsc-handbook-2022.pdf (must exist)
+
+
+INSTALLATION & SETUP
+========================================================================
+
+Step 1: Create and activate virtual environment
+-----------------------------------------------
+# Create venv
+python -m venv env
+
+# Activate on Windows
+env\Scripts\activate
+
+# Activate on Mac/Linux
+source env/bin/activate
+
+
+Step 2: Install dependencies
+-----------------------------
+IMPORTANT: If you have NumPy 2.x issues, fix it FIRST:
+
+# Downgrade numpy to 1.x
+pip install "numpy<2.0"
+
+Then install PyTorch:
+
+# For CUDA 12.1 (Windows/Linux with NVIDIA GPU)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# For CPU only (Mac or no GPU)
+pip install torch torchvision torchaudio
+
+Then install other requirements:
+pip install transformers PyPDF2 scikit-learn
+
+OR use the requirements.txt (if numpy is fixed):
+pip install -r requirements.txt
+
+
+Step 3: Verify installation
+---------------------------
+python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+python -c "import transformers; print(f'Transformers: {transformers.__version__}')"
+python -c "import numpy; print(f'NumPy: {numpy.__version__}')"
+
+Expected output:
+PyTorch: 2.x.x
+Transformers: 4.x.x
+NumPy: 1.x.x (NOT 2.x.x!)
+
+
+RUNNING THE SCRIPT
+========================================================================
+
+Basic Usage:
+-----------
+python rag_tune.py
+
+This will:
+- Load TinyLlama model
+- Process the handbook (creates ~100-150 chunks)
+- Generate embeddings (takes 30-60 seconds)
+- Answer 3 default questions
+- Save to ./rag_out/rag_answers.json
+
+Expected runtime:
+- CPU: 10-15 minutes
+- GPU: 2-3 minutes
+
+
+Command-Line Arguments:
+----------------------
+python rag_tune.py [OPTIONS]
+
+Model & Data:
+  --model_name MODEL         HuggingFace model (default: TinyLlama/TinyLlama-1.1B-Chat-v1.0)
+  --pdf_path PATH            Path to PDF (default: ./datasets/cpsc-handbook-2022.pdf)
+  --output_dir DIR           Output directory (default: ./rag_out)
+
+Chunking:
+  --max_length N             Tokens per chunk (default: 1024)
+  --stride N                 Chunk overlap in tokens (default: 128)
+
+Retrieval:
+  --top_k N                  Number of chunks to retrieve (default: 3)
+  --embedding_batch_size N   Batch size for embeddings (default: 4)
+
+Generation:
+  --temperature FLOAT        Sampling temperature (default: 0.2)
+  --gen_top_k N             Top-k for generation (default: 50)
+  --top_p FLOAT             Nucleus sampling (default: 0.95)
+  --repetition_penalty FLOAT Repetition penalty (default: 1.1)
+
+Questions:
+  --questions Q1 Q2 Q3      Custom questions (space-separated strings)
+
+
+Example Commands:
+----------------
+# Default run
+python rag_tune.py
+
+# Retrieve more chunks
+python rag_tune.py --top_k 5
+
+# Faster embedding generation (if you have GPU memory)
+python rag_tune.py --embedding_batch_size 8
+
+# Custom questions
+python rag_tune.py --questions "What are CS core courses?" "What is the GPA requirement?"
+
+# More creative/diverse answers
+python rag_tune.py --temperature 0.7 --top_p 0.9
+
+
+DEFAULT QUESTIONS
+========================================================================
+
+The script answers these 3 questions (same as params_finetune.py):
+
+1. "What are the core courses required for a computer science undergraduate degree?"
+
+2. "Describe the rules for completing a senior project, including prerequisites."
+
+3. "What are the degree requirements for graduation?"
+
+
+OUTPUT FORMAT
+========================================================================
+
+File: ./rag_out/rag_answers.json
+
+Structure:
+{
+  "question_text": {
+    "prompt": "full prompt sent to model (includes context)",
+    "answer": "generated answer from TinyLlama",
+    "retrieved_context": "concatenated text from top-k chunks",
+    "retrieval_method": "semantic_embeddings",
+    "chunk_indices": [12, 45, 78],
+    "similarity_scores": [0.8432, 0.7891, 0.7654]
+  },
+  ...
+}
+
+Key fields:
+- prompt: Shows exactly what was sent to the model
+- answer: The generated response
+- retrieved_context: The chunks used as context
+- chunk_indices: Which chunks were retrieved (for debugging)
+- similarity_scores: How similar each chunk was to the query (0-1 scale)
+
+
+HOW IT WORKS (TECHNICAL DETAILS)
+========================================================================
+
+Architecture Overview:
+---------------------
+1. PDF Loading
+   - PyPDF2 extracts text from all pages
+   - Concatenates into single text string
+
+2. Chunking
+   - Tokenizes entire document
+   - Creates sliding windows: 1024 tokens with 128-token overlap
+   - Decodes each window back to text for retrieval
+
+3. Embedding Generation
+   - For each chunk:
+     * Tokenizes (max 512 tokens for efficiency)
+     * Passes through TinyLlama to get hidden states
+     * Mean-pools over sequence dimension (attention-mask aware)
+     * L2-normalizes for cosine similarity
+   - Result: [num_chunks, hidden_dim] embedding matrix
+
+4. Retrieval
+   - Encodes query into embedding (same process)
+   - Computes dot product with all chunk embeddings (= cosine similarity)
+   - Returns top-k highest scoring chunks
+
+5. Generation
+   - Builds instruction-style prompt with:
+     * Role description
+     * CONTEXT (retrieved chunks)
+     * QUESTION
+     * INSTRUCTIONS
+   - Generates answer using pretrained TinyLlama
+   - Extracts only new tokens (no prompt echo)
+
+6. Output
+   - Saves all prompts, answers, and metadata to JSON
+
+
+Prompt Template:
+---------------
+You are an assistant specialized in answering questions using the provided
+excerpts from a university CS handbook.
+
+CONTEXT:
+{retrieved_chunks_concatenated}
+
+QUESTION:
+{question}
+
+INSTRUCTIONS: Answer succinctly and refer to the handbook when appropriate.
+If the answer is not in the context, say 'Not found in context.'
+
+ANSWER:
+
+
+Differences from params_finetune.py:
+-----------------------------------
+| Aspect              | params_finetune.py       | rag_tune.py                |
+|---------------------|--------------------------|----------------------------|
+| Model adaptation    | Fine-tuned with LoRA     | Pretrained (no training)   |
+| Retrieval method    | TF-IDF vectorization     | Semantic embeddings        |
+| Embedding source    | sklearn TfidfVectorizer  | TinyLlama hidden states    |
+| Training required   | Yes (~10-30 min)         | No (instant)               |
+| Retrieval quality   | Keyword-based            | Meaning-based              |
+| Answer style        | Learns handbook style    | Generic but factual        |
+| Memory usage        | Lower (PEFT efficient)   | Moderate (full inference)  |
+| Output location     | ft_out/                  | rag_out/                   |
+
+
+TROUBLESHOOTING
+========================================================================
+
+Problem: NumPy 2.x incompatibility error
+Solution:
+  pip uninstall numpy
+  pip install "numpy<2.0"
+  pip install torch transformers PyPDF2 scikit-learn
+
+Problem: "No module named transformers"
+Solution:
+  Make sure venv is activated, then:
+  pip install transformers
+
+Problem: CUDA out of memory
+Solution:
+  1. Reduce embedding_batch_size:
+     python rag_tune.py --embedding_batch_size 2
+  2. Or run on CPU (slower):
+     Script auto-detects, but you can force CPU by disabling CUDA
+
+Problem: "No text extracted from PDF"
+Solution:
+  - Verify datasets/cpsc-handbook-2022.pdf exists
+  - Check file is not corrupted
+  - Ensure PDF has readable text (not scanned images)
+
+Problem: Slow embedding generation
+Solution:
+  - Use GPU if available (much faster)
+  - Reduce number of chunks by increasing stride:
+    python rag_tune.py --stride 256
+  - Or use smaller chunks:
+    python rag_tune.py --max_length 512
+
+Problem: Poor answer quality
+Solution:
+  - Retrieve more chunks:
+    python rag_tune.py --top_k 5
+  - Adjust temperature for more/less creativity:
+    python rag_tune.py --temperature 0.3
+  - Check retrieved_context in JSON to see if relevant info was found
+
+Problem: Script hangs at "Generating embeddings"
+Solution:
+  - This is normal - takes 30-60 seconds on GPU, longer on CPU
+  - Progress updates show every 20 chunks
+  - Be patient, especially on CPU
+
+
+EXPECTED BEHAVIOR
+========================================================================
+
+Console Output:
+--------------
+Device selected: cuda:0  (or cpu)
+NOTE: Using pretrained model WITHOUT fine-tuning (pure RAG approach)
+
+Loading pretrained model: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+Using fp16 precision on GPU  (if GPU available)
+Model loaded successfully
+
+Reading PDF: ./datasets/cpsc-handbook-2022.pdf
+Extracted 123,456 characters from PDF
+
+Creating text chunks with sliding window...
+Tokenizing full text to ids (this may take a moment) ...
+Total tokens in document: 45,123
+Created 142 token windows (window=1024, stride=128)
+Successfully created 142 chunks
+
+============================================================
+GENERATING SEMANTIC EMBEDDINGS
+============================================================
+Encoding 142 chunks into embeddings (batch_size=4)...
+  Processed 20/142 chunks
+  Processed 40/142 chunks
+  ...
+Generated embeddings shape: (142, 2048)
+Embedding generation complete!
+
+============================================================
+ANSWERING 3 QUESTIONS
+============================================================
+
+============================================================
+Question 1/3:
+What are the core courses required for a computer science undergraduate degree?
+============================================================
+
+Retrieving relevant chunks...
+Retrieved chunk indices: [23, 67, 89]
+Similarity scores: ['0.8234', '0.7891', '0.7654']
+
+Generating answer...
+
+Generated answer:
+The core courses required for a CS degree include...
+
+[Continues for all 3 questions]
+
+============================================================
+RESULTS SAVED
+============================================================
+Output file: ./rag_out/rag_answers.json
+
+RAG system execution complete!
+
+Next steps:
+1. Compare with fine-tuned results: ft_out/finetune_answers.json
+2. Analyze retrieval quality and answer quality
+3. Use for assignment report (Part 4 evaluation)
+
+
+Files Created:
+-------------
+./rag_out/rag_answers.json  (~50-100 KB)
+
+No model checkpoints are saved (pretrained model only).
+
+
+COMPARING WITH params_finetune.py
+========================================================================
+
+To compare RAG vs fine-tuning approaches:
+
+1. Run params_finetune.py first:
+   python params_finetune.py --method lora --epochs 2
+
+2. Run rag_tune.py:
+   python rag_tune.py
+
+3. Compare outputs:
+   - ft_out/finetune_answers.json  (fine-tuned)
+   - rag_out/rag_answers.json      (RAG)
+
+4. For each question, compare:
+   - Which chunks were retrieved (chunk_indices)
+   - Answer quality (correctness, completeness, clarity)
+   - Answer style (handbook-like vs generic)
+
+5. Expected differences:
+   - Fine-tuned: Better fluency, handbook style, may hallucinate
+   - RAG: More factual, references context, may be generic
+   - Retrieval: TF-IDF finds keywords, semantic finds concepts
+
+
+FOR THE ASSIGNMENT REPORT
+========================================================================
+
+Include the following in your report for Part 4:
+
+1. RAG System Description:
+   - Chunk size: 1024 tokens
+   - Chunk overlap: 128 tokens
+   - Vector storage: In-memory NumPy array
+   - Retrieval strategy: Top-3 chunks, cosine similarity scoring
+   - Embedding method: TinyLlama mean-pooled hidden states
+
+2. Prompt Template:
+   [Copy the template from "Prompt Template" section above]
+
+3. Evaluation:
+   - Run both params_finetune.py and rag_tune.py
+   - For each of the 3 questions, compare:
+     * Correctness: Does it answer the question accurately?
+     * Completeness: Does it include all necessary information?
+     * Clarity: Is it easy to understand?
+   - Rate each answer: High/Medium/Low
+
+4. Discussion:
+   - Which approach performed better overall?
+   - Specific examples where one approach excelled
+   - Trade-offs:
+     * RAG: No training time, more factual, requires retrieval
+     * Fine-tuning: Training overhead, learns style, may drift from facts
+   - Use cases:
+     * RAG: When facts change frequently, when you need citations
+     * Fine-tuning: When you need specific style, domain adaptation
+
+
+ADVANCED USAGE
+========================================================================
+
+Using Different Models:
+----------------------
+# Larger model (requires more GPU memory)
+python rag_tune.py --model_name "meta-llama/Llama-2-7b-chat-hf"
+
+# Smaller model (faster but lower quality)
+python rag_tune.py --model_name "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T"
+
+
+Processing Multiple PDFs:
+-------------------------
+The script currently handles one PDF. To process multiple documents:
+1. Concatenate PDFs before processing, OR
+2. Run script multiple times with different --pdf_path arguments
+
+
+Batch Processing Questions:
+---------------------------
+# Create questions file
+echo "What are CS core courses?" > questions.txt
+echo "What is the GPA requirement?" >> questions.txt
+echo "Describe the senior project." >> questions.txt
+
+# Read and pass to script
+python rag_tune.py --questions $(cat questions.txt)
+
+
+Exporting Results:
+-----------------
+import json
+
+# Load results
+with open('rag_out/rag_answers.json', 'r') as f:
+    results = json.load(f)
+
+# Print formatted
+for q, data in results.items():
+    print(f"Q: {q}")
+    print(f"A: {data['answer']}")
+    print(f"Chunks used: {data['chunk_indices']}")
+    print(f"Scores: {data['similarity_scores']}")
+    print()
+
+
+PERFORMANCE OPTIMIZATION
+========================================================================
+
+For Faster Embedding Generation:
+--------------------------------
+# Increase batch size (if GPU memory allows)
+python rag_tune.py --embedding_batch_size 16
+
+# Use smaller embedding context
+# (Edit encode_chunks_with_model, change max_length=512 to max_length=256)
+
+
+For Lower Memory Usage:
+-----------------------
+# Smaller batch size
+python rag_tune.py --embedding_batch_size 1
+
+# Process fewer chunks (larger stride)
+python rag_tune.py --stride 256
+
+# Shorter chunks
+python rag_tune.py --max_length 512 --stride 64
+
+
+For Better Answer Quality:
+---------------------------
+# Retrieve more context
+python rag_tune.py --top_k 5
+
+# More deterministic (less creative)
+python rag_tune.py --temperature 0.1
+
+# More creative (less deterministic)
+python rag_tune.py --temperature 0.7 --top_p 0.9
+
+
+DEBUGGING
+========================================================================
+
+Enable Verbose Output:
+---------------------
+The script already prints progress. To see more:
+- Check retrieved chunk indices in console
+- Inspect similarity scores to verify relevance
+- Read full prompts in output JSON
+
+Check Retrieval Quality:
+------------------------
+1. Open rag_out/rag_answers.json
+2. For each question, read "retrieved_context"
+3. Verify it contains relevant information
+4. Check "similarity_scores" - should be > 0.5 for good matches
+
+Validate Embeddings:
+-------------------
+import numpy as np
+
+# After running, embeddings are normalized
+# Verify: np.linalg.norm(embeddings, axis=1) ≈ 1.0 for all chunks
+
+
+KNOWN LIMITATIONS
+========================================================================
+
+1. Single PDF only - doesn't support multiple documents
+2. No persistent vector storage - embeddings regenerated each run
+3. No hybrid retrieval - only semantic (no TF-IDF combination)
+4. Fixed chunk size - can't dynamically adjust
+5. No re-ranking - uses single-stage retrieval
+6. No query expansion - one query → one retrieval
+7. Context window limit - may truncate very long retrieved contexts
+
+
+CONTACT & SUPPORT
+========================================================================
+
+For issues related to:
+- NumPy/PyTorch compatibility: Check versions, downgrade numpy
+- Model loading: Verify internet connection (downloads from HuggingFace)
+- PDF extraction: Ensure PDF is readable, not scanned images
+- GPU issues: Check CUDA installation, driver version
+
+Common Error Messages:
+- "CUDA out of memory" → Reduce batch size or use CPU
+- "No module named X" → Activate venv, install package
+- "No text extracted" → Check PDF file exists and is readable
+- "Failed to initialize NumPy" → Downgrade to numpy<2.0
+
+
+VERSION HISTORY
+========================================================================
+
+v1.0 (2025) - Initial implementation
+- TinyLlama semantic embeddings
+- NumPy-based cosine similarity
+- GPU/CPU auto-detection
+- Same chunking as params_finetune.py
+- Instruction-style prompts
+- JSON output with metadata
+
+
+================================================================================
+END OF DOCUMENTATION
+================================================================================
+
+Quick Reference Commands:
+# Setup
+python -m venv env
+source env/bin/activate  # Windows: env\Scripts\activate
+pip install "numpy<2.0" torch transformers PyPDF2 scikit-learn
+
+# Run
+python rag_tune.py
+
+# Output
+./rag_out/rag_answers.json
+
+# Compare with fine-tuning
+python params_finetune.py
+python rag_tune.py
+# Compare: ft_out/finetune_answers.json vs rag_out/rag_answers.json
