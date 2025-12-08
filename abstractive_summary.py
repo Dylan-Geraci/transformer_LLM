@@ -345,7 +345,7 @@ def main():
     p.add_argument("--csv", type=str, default="./datasets/all_news.csv", help="Path to all_news.csv")
     p.add_argument("--num_pairs", type=int, default=200000, help="Number of article/headline pairs to use (>=50)")
     p.add_argument("--min_pairs", type=int, default=50, help="Minimum pairs to expect")
-    p.add_argument("--epochs", type=int, default=6, help="Training epochs")
+    p.add_argument("--epochs", type=int, default=10, help="Training epochs")
     p.add_argument("--batch_size", type=int, default=32, help="Batch size")
     p.add_argument("--d_model", type=int, default=128, help="Transformer d_model")
     p.add_argument("--nhead", type=int, default=4, help="Number of attention heads")
