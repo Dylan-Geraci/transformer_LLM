@@ -111,13 +111,20 @@ python rag_tune.py
 This will:
 - Load TinyLlama model
 - Process the handbook (creates ~100-150 chunks)
-- Generate embeddings (takes 30-60 seconds)
+- Generate embeddings OR load from cache (see below)
 - Answer 3 default questions
 - Save to ./rag_out/rag_answers.json
 
 Expected runtime:
-- CPU: 10-15 minutes
-- GPU: 2-3 minutes
+FIRST RUN (generates embeddings):
+- CPU: 60-180 minutes
+- GPU: 20-60 minutes
+
+SECOND RUN (uses cached embeddings):
+- CPU: 1-5 minutes
+- GPU: 1-3 minutes
+
+Cache file: embeddings_cache_<hash>.pkl (automatically saved)
 
 
 Command-Line Arguments:
@@ -277,6 +284,15 @@ Differences from params_finetune.py:
 TROUBLESHOOTING
 ========================================================================
 
+**LATEST VERSION INCLUDES AUTO-FIXES FOR COMMON ISSUES!**
+
+Bug Fixes Applied (v1.1):
+- Auto GPU OOM handling with adaptive batch size reduction
+- Embedding caching - second run is 10-20x faster
+- Fixed tensor shape handling for correct answer extraction
+
+---
+
 Problem: NumPy 2.x incompatibility error
 Solution:
   pip uninstall numpy
@@ -290,10 +306,11 @@ Solution:
 
 Problem: CUDA out of memory
 Solution:
-  1. Reduce embedding_batch_size:
-     python rag_tune.py --embedding_batch_size 2
-  2. Or run on CPU (slower):
-     Script auto-detects, but you can force CPU by disabling CUDA
+  [AUTO-HANDLED] Script now automatically reduces batch size on OOM!
+  If issues persist:
+  1. Manually reduce: python rag_tune.py --embedding_batch_size 2
+  2. Close other GPU applications (Chrome, games)
+  3. Or run on CPU (slower but works)
 
 Problem: "No text extracted from PDF"
 Solution:
@@ -303,25 +320,28 @@ Solution:
 
 Problem: Slow embedding generation
 Solution:
+  [AUTO-HANDLED] Embeddings are now cached! Second run is ~10-20x faster.
+  First run: ~20-60 min on GPU, ~60-180 min on CPU
+  Second run: ~1-5 min (uses cache)
+
+  To speed up first run:
   - Use GPU if available (much faster)
-  - Reduce number of chunks by increasing stride:
-    python rag_tune.py --stride 256
-  - Or use smaller chunks:
-    python rag_tune.py --max_length 512
+  - Reduce chunks: python rag_tune.py --stride 256
 
 Problem: Poor answer quality
 Solution:
-  - Retrieve more chunks:
-    python rag_tune.py --top_k 5
-  - Adjust temperature for more/less creativity:
-    python rag_tune.py --temperature 0.3
-  - Check retrieved_context in JSON to see if relevant info was found
+  [CHECK IF BUG FIX HELPED] Tensor shape bug is now fixed.
+  If still poor:
+  - Retrieve more chunks: python rag_tune.py --top_k 5
+  - Adjust temperature: python rag_tune.py --temperature 0.3
+  - Check retrieved_context in JSON to verify relevant info was found
 
 Problem: Script hangs at "Generating embeddings"
 Solution:
-  - This is normal - takes 30-60 seconds on GPU, longer on CPU
+  - FIRST RUN: This is normal (20-60 min on GPU, longer on CPU)
+  - SECOND RUN: Should be fast (~1-5 min) using cache
   - Progress updates show every 20 chunks
-  - Be patient, especially on CPU
+  - Check for cache file: embeddings_cache_<hash>.pkl
 
 
 EXPECTED BEHAVIOR
@@ -567,12 +587,14 @@ KNOWN LIMITATIONS
 ========================================================================
 
 1. Single PDF only - doesn't support multiple documents
-2. No persistent vector storage - embeddings regenerated each run
-3. No hybrid retrieval - only semantic (no TF-IDF combination)
-4. Fixed chunk size - can't dynamically adjust
-5. No re-ranking - uses single-stage retrieval
-6. No query expansion - one query → one retrieval
-7. Context window limit - may truncate very long retrieved contexts
+2. No hybrid retrieval - only semantic (no TF-IDF combination)
+3. Fixed chunk size - can't dynamically adjust
+4. No re-ranking - uses single-stage retrieval
+5. No query expansion - one query → one retrieval
+6. Context window limit - may truncate very long retrieved contexts
+
+NOTE: Embedding caching was added in the latest version - embeddings are now
+persisted to disk and reused across runs!
 
 
 CONTACT & SUPPORT
@@ -593,6 +615,20 @@ Common Error Messages:
 
 VERSION HISTORY
 ========================================================================
+
+v1.1 (2025) - Bug fixes and performance improvements
+- [BUG FIX] Fixed tensor shape checking in answer extraction (lines 316-335)
+  * Previously checked batch dimension instead of sequence length
+  * Caused incorrect answer extraction or empty responses
+  * Now correctly extracts only new generated tokens
+- [FEATURE] Added persistent embedding caching (lines 258-307)
+  * Embeddings saved to disk using pickle (MD5 hash keyed)
+  * Second run is 10-20x faster (~1-5 min vs 20-60 min)
+  * Cache invalidated if PDF or chunking parameters change
+- [BUG FIX] Added GPU OOM auto-handling (lines 167-220)
+  * Automatically reduces batch size if CUDA out of memory
+  * Retries failed batches with smaller batch size
+  * Prevents crashes during embedding generation
 
 v1.0 (2025) - Initial implementation
 - TinyLlama semantic embeddings

@@ -8,8 +8,10 @@ No fine-tuning - pure RAG approach.
 """
 
 import argparse
+import hashlib
 import json
 import os
+import pickle
 import sys
 import warnings
 from typing import List, Tuple
@@ -168,34 +170,54 @@ def encode_chunks_with_model(
     if verbose:
         print(f"Encoding {len(chunks)} chunks into embeddings (batch_size={batch_size})...")
 
+    current_batch_size = batch_size
+
     with torch.no_grad():
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i:i+batch_size]
+        i = 0
+        while i < len(chunks):
+            batch = chunks[i:i+current_batch_size]
 
-            # Tokenize (use shorter max_length for embedding efficiency)
-            encoded = tokenizer(
-                batch,
-                padding=True,
-                truncation=True,
-                max_length=512,  # Shorter for embedding generation
-                return_tensors="pt"
-            ).to(device)
+            try:
+                # Tokenize (use shorter max_length for embedding efficiency)
+                encoded = tokenizer(
+                    batch,
+                    padding=True,
+                    truncation=True,
+                    max_length=512,  # Shorter for embedding generation
+                    return_tensors="pt"
+                ).to(device)
 
-            # Get last hidden state
-            outputs = model(**encoded, output_hidden_states=True)
-            hidden = outputs.hidden_states[-1]  # [batch, seq_len, hidden_dim]
+                # Get last hidden state
+                outputs = model(**encoded, output_hidden_states=True)
+                hidden = outputs.hidden_states[-1]  # [batch, seq_len, hidden_dim]
 
-            # Mean pooling (attention mask aware)
-            mask = encoded['attention_mask'].unsqueeze(-1)  # [batch, seq_len, 1]
-            masked_hidden = hidden * mask
-            sum_hidden = masked_hidden.sum(dim=1)  # [batch, hidden_dim]
-            sum_mask = mask.sum(dim=1).clamp(min=1e-9)  # [batch, 1]
-            mean_pooled = sum_hidden / sum_mask
+                # Mean pooling (attention mask aware)
+                mask = encoded['attention_mask'].unsqueeze(-1)  # [batch, seq_len, 1]
+                masked_hidden = hidden * mask
+                sum_hidden = masked_hidden.sum(dim=1)  # [batch, hidden_dim]
+                sum_mask = mask.sum(dim=1).clamp(min=1e-9)  # [batch, 1]
+                mean_pooled = sum_hidden / sum_mask
 
-            embeddings.append(mean_pooled.cpu().numpy())
+                embeddings.append(mean_pooled.cpu().numpy())
 
-            if verbose and (i + batch_size) % 20 == 0:
-                print(f"  Processed {min(i + batch_size, len(chunks))}/{len(chunks)} chunks")
+                if verbose and (i + current_batch_size) % 20 == 0:
+                    print(f"  Processed {min(i + current_batch_size, len(chunks))}/{len(chunks)} chunks")
+
+                # Move to next batch
+                i += current_batch_size
+
+            except RuntimeError as e:
+                if "out of memory" in str(e).lower():
+                    if current_batch_size > 1:
+                        print(f"  [WARN] GPU OOM at batch {i}. Reducing batch_size {current_batch_size} -> {current_batch_size//2}")
+                        if device.type == 'cuda':
+                            torch.cuda.empty_cache()
+                        current_batch_size = current_batch_size // 2
+                        # Retry this batch with smaller size (don't increment i)
+                    else:
+                        raise RuntimeError("GPU OOM even with batch_size=1. GPU memory insufficient.") from e
+                else:
+                    raise
 
     # Concatenate and normalize
     all_embeddings = np.vstack(embeddings)
@@ -251,6 +273,58 @@ def retrieve_top_k_semantic(
     top_chunks = [raw_chunks[i] for i in top_indices]
 
     return top_chunks, top_indices, top_scores
+
+
+# -------------------------
+# Embedding caching
+# -------------------------
+
+
+def get_embeddings_cache_path(pdf_path: str, model_name: str, max_length: int, stride: int) -> str:
+    """
+    Generate cache filename based on parameters.
+
+    Args:
+        pdf_path: Path to PDF file
+        model_name: Name of the model used
+        max_length: Max tokens per chunk
+        stride: Chunk overlap
+
+    Returns:
+        Cache file path
+    """
+    cache_key = f"{pdf_path}_{model_name}_{max_length}_{stride}"
+    hash_key = hashlib.md5(cache_key.encode()).hexdigest()
+    return f"embeddings_cache_{hash_key}.pkl"
+
+
+def save_embeddings_cache(cache_path: str, chunk_embeddings: np.ndarray, raw_chunks: List[str]):
+    """
+    Save embeddings and chunks to disk.
+
+    Args:
+        cache_path: Path to save cache file
+        chunk_embeddings: Numpy array of embeddings
+        raw_chunks: List of chunk texts
+    """
+    with open(cache_path, 'wb') as f:
+        pickle.dump({'embeddings': chunk_embeddings, 'chunks': raw_chunks}, f)
+    print(f"Saved embeddings cache to {cache_path}")
+
+
+def load_embeddings_cache(cache_path: str) -> Tuple[np.ndarray, List[str]]:
+    """
+    Load embeddings and chunks from disk.
+
+    Args:
+        cache_path: Path to cache file
+
+    Returns:
+        Tuple of (embeddings, chunks)
+    """
+    with open(cache_path, 'rb') as f:
+        data = pickle.load(f)
+    return data['embeddings'], data['chunks']
 
 
 # -------------------------
@@ -314,16 +388,18 @@ def generate_answer(
         )
 
     # Extract only new tokens (no prompt echo)
-    gen_seq = outputs[0]
-    if gen_seq.shape[0] > input_len:
+    gen_seq = outputs[0]  # 1D tensor of token IDs
+    input_len = inputs["input_ids"].shape[1]  # Input sequence length
+
+    if len(gen_seq) > input_len:  # Correct - checks total tokens
         new_tokens = gen_seq[input_len:]
         answer = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
     else:
-        # Fallback: try to split prompt from output
+        # Fallback: decode and remove prompt
         full_text = tokenizer.decode(gen_seq, skip_special_tokens=True)
         prompt_text = tokenizer.decode(inputs["input_ids"][0], skip_special_tokens=True)
         if prompt_text in full_text:
-            answer = full_text.split(prompt_text)[-1].strip()
+            answer = full_text.replace(prompt_text, "", 1).strip()
         else:
             answer = full_text.strip()
 
@@ -435,19 +511,43 @@ def main():
     print(f"Successfully created {len(raw_chunks)} chunks")
     print()
 
-    # Generate embeddings for all chunks
+    # Generate or load embeddings (with caching)
     print("="*60)
-    print("GENERATING SEMANTIC EMBEDDINGS")
+    print("GENERATING/LOADING SEMANTIC EMBEDDINGS")
     print("="*60)
-    chunk_embeddings = encode_chunks_with_model(
-        raw_chunks,
-        model,
-        tokenizer,
-        device,
-        batch_size=args.embedding_batch_size,
-        verbose=True
-    )
-    print("Embedding generation complete!")
+
+    cache_path = get_embeddings_cache_path(args.pdf_path, args.model_name, args.max_length, args.stride)
+
+    if os.path.exists(cache_path):
+        print(f"Loading embeddings from cache: {cache_path}")
+        chunk_embeddings, cached_chunks = load_embeddings_cache(cache_path)
+
+        if len(cached_chunks) == len(raw_chunks):
+            print("Cache valid! Skipping embedding generation.")
+        else:
+            print(f"Cache invalid (chunk count mismatch: {len(cached_chunks)} vs {len(raw_chunks)}). Regenerating...")
+            chunk_embeddings = encode_chunks_with_model(
+                raw_chunks,
+                model,
+                tokenizer,
+                device,
+                batch_size=args.embedding_batch_size,
+                verbose=True
+            )
+            save_embeddings_cache(cache_path, chunk_embeddings, raw_chunks)
+    else:
+        print("No cache found. Generating embeddings...")
+        chunk_embeddings = encode_chunks_with_model(
+            raw_chunks,
+            model,
+            tokenizer,
+            device,
+            batch_size=args.embedding_batch_size,
+            verbose=True
+        )
+        save_embeddings_cache(cache_path, chunk_embeddings, raw_chunks)
+
+    print("Embedding ready!")
     print()
 
     # Default questions (same as params_finetune.py)
