@@ -586,14 +586,19 @@ def main():
         # Build context
         context = "\n\n".join(retrieved_chunks)
 
-        # Build prompt (same template as params_finetune.py)
+        # Build prompt (improved for better generation)
         prompt = (
-            "You are an assistant specialized in answering questions using the provided excerpts from a university CS handbook.\n\n"
+            "You are an assistant specialized in answering questions using ONLY the information from the provided context.\n\n"
             "CONTEXT:\n"
             f"{context}\n\n"
             "QUESTION:\n"
             f"{q}\n\n"
-            "INSTRUCTIONS: Answer succinctly and refer to the handbook when appropriate. If the answer is not in the context, say 'Not found in context.'\n\n"
+            "INSTRUCTIONS:\n"
+            "- Answer ONLY using information from the CONTEXT above\n"
+            "- Be CONCISE and DIRECT (2-3 sentences maximum)\n"
+            "- SYNTHESIZE information - do NOT copy entire sentences from the context\n"
+            "- If the answer is not clearly in the context, say 'Not found in context.'\n"
+            "- Start your answer directly - do NOT begin with filler phrases\n\n"
             "ANSWER:"
         )
 
