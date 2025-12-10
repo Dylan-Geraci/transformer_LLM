@@ -212,3 +212,4 @@ env
 ft_out
 *.pth
 .DS_Store
+*.json
